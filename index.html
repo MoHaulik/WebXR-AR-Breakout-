@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebXR AR Breakout Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+        #startARButton {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            font-size: 18px;
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #gameOverScreen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+        }
+        #gameOverScreen button {
+            margin-top: 15px;
+            padding: 10px 20px;
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #scoreDisplay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="scoreDisplay">Score: 0</div>
+    <button id="startARButton">Start AR Game</button>
+    
+    <div id="gameOverScreen">
+        <h2>Game Over</h2>
+        <p id="finalScore">Your score: 0</p>
+        <button id="restartButton">Play Again</button>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.js';
+        import { BoxLineGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/BoxLineGeometry.js';
+        import { XRControllerModelFactory } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/XRControllerModelFactory.js';
+
+        // Game variables
+        let scene, camera, renderer;
+        let controller1, controller2;
+        let paddle;
+        let ball;
+        let bricks = [];
+        let gameActive = false;
+        let score = 0;
+        let lives = 3;
+        let ballSpeed = 0.05;
+        let ballDirection = new THREE.Vector3(0.03, 0.04, 0);
+        let raycaster = new THREE.Raycaster();
+        let tempMatrix = new THREE.Matrix4();
+        let gameBoard;
+        
+        // Constants
+        const PADDLE_WIDTH = 0.2;
+        const PADDLE_HEIGHT = 0.03;
+        const PADDLE_DEPTH = 0.04;
+        const BALL_RADIUS = 0.02;
+        const BRICK_WIDTH = 0.08;
+        const BRICK_HEIGHT = 0.04;
+        const BRICK_DEPTH = 0.04;
+        const BRICK_ROWS = 4;
+        const BRICK_COLUMNS = 8;
+        
+        // Game boundaries
+        const GAME_WIDTH = 0.8;
+        const GAME_HEIGHT = 0.6;
+        const GAME_DEPTH = 0.1;
+        
+        // Initialize the scene, camera, and renderer
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x505050);
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.6, 0);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.xr.enabled = true;
+            document.body.appendChild(renderer.domElement);
+            
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            // Set up AR button
+            document.getElementById('startARButton').onclick = startAR;
+            
+            // Add controllers for Meta Quest 3
+            setupControllers();
+            
+            // Create the game elements
+            createGameElements();
+            
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
+            
+            // Set up restart button
+            document.getElementById('restartButton').addEventListener('click', restartGame);
+            
+            // Start animation loop
+            renderer.setAnimationLoop(animate);
+        }
+        
+        function setupControllers() {
+            // XR Controller
+            controller1 = renderer.xr.getController(0);
+            controller1.addEventListener('selectstart', onSelectStart);
+            controller1.addEventListener('selectend', onSelectEnd);
+            scene.add(controller1);
+            
+            controller2 = renderer.xr.getController(1);
+            controller2.addEventListener('selectstart', onSelectStart);
+            controller2.addEventListener('selectend', onSelectEnd);
+            scene.add(controller2);
+            
+            // Controller models
+            const controllerModelFactory = new XRControllerModelFactory();
+            
+            const controllerGrip1 = renderer.xr.getControllerGrip(0);
+            controllerGrip1.add(controllerModelFactory.createControllerModel(controllerGrip1));
+            scene.add(controllerGrip1);
+            
+            const controllerGrip2 = renderer.xr.getControllerGrip(1);
+            controllerGrip2.add(controllerModelFactory.createControllerModel(controllerGrip2));
+            scene.add(controllerGrip2);
+        }
+        
+        function createGameElements() {
+            // Create game board
+            createGameBoard();
+            
+            // Create paddle
+            createPaddle();
+            
+            // Create ball
+            createBall();
+            
+            // Create bricks
+            createBricks();
+        }
+        
+        function createGameBoard() {
+            // Game board container
+            gameBoard = new THREE.Group();
+            scene.add(gameBoard);
+            
+            // Position the game board in front of the player
+            gameBoard.position.set(0, 1.5, -1.5);
+            gameBoard.rotation.set(-Math.PI / 6, 0, 0); // Tilt slightly for better visibility
+            
+            // Create game boundaries
+            const boardGeometry = new BoxLineGeometry(
+                GAME_WIDTH, GAME_HEIGHT, GAME_DEPTH, 1, 1, 1
+            );
+            const boardMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
+            const boardBox = new THREE.LineSegments(boardGeometry, boardMaterial);
+            gameBoard.add(boardBox);
+            
+            // Create solid back plane for better visibility
+            const backPlane = new THREE.Mesh(
+                new THREE.PlaneGeometry(GAME_WIDTH, GAME_HEIGHT),
+                new THREE.MeshBasicMaterial({ color: 0x000055, opacity: 0.3, transparent: true })
+            );
+            backPlane.position.z = -GAME_DEPTH/2;
+            gameBoard.add(backPlane);
+        }
+        
+        function createPaddle() {
+            const paddleGeometry = new THREE.BoxGeometry(PADDLE_WIDTH, PADDLE_HEIGHT, PADDLE_DEPTH);
+            const paddleMaterial = new THREE.MeshPhongMaterial({ color: 0x1565c0 });
+            paddle = new THREE.Mesh(paddleGeometry, paddleMaterial);
+            paddle.position.y = -GAME_HEIGHT/2 + 0.05;
+            paddle.position.z = 0;
+            gameBoard.add(paddle);
+        }
+        
+        function createBall() {
+            const ballGeometry = new THREE.SphereGeometry(BALL_RADIUS, 16, 16);
+            const ballMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff });
+            ball = new THREE.Mesh(ballGeometry, ballMaterial);
+            ball.position.copy(paddle.position);
+            ball.position.y += PADDLE_HEIGHT + BALL_RADIUS;
+            gameBoard.add(ball);
+        }
+        
+        function createBricks() {
+            const brickGeometry = new THREE.BoxGeometry(BRICK_WIDTH, BRICK_HEIGHT, BRICK_DEPTH);
+            
+            // Create brick layout
+            const brickColors = [0xff0000, 0xff9900, 0xffff00, 0x00ff00, 0x0099ff, 0x9900ff];
+            
+            const startX = -GAME_WIDTH/2 + BRICK_WIDTH/2 + 0.05;
+            const startY = GAME_HEIGHT/2 - BRICK_HEIGHT/2 - 0.05;
+            
+            for (let row = 0; row < BRICK_ROWS; row++) {
+                for (let col = 0; col < BRICK_COLUMNS; col++) {
+                    const colorIndex = row % brickColors.length;
+                    const brickMaterial = new THREE.MeshPhongMaterial({ color: brickColors[colorIndex] });
+                    const brick = new THREE.Mesh(brickGeometry, brickMaterial);
+                    
+                    brick.position.x = startX + col * (BRICK_WIDTH + 0.01);
+                    brick.position.y = startY - row * (BRICK_HEIGHT + 0.01);
+                    brick.position.z = 0;
+                    
+                    gameBoard.add(brick);
+                    bricks.push(brick);
+                }
+            }
+        }
+        
+        function startAR() {
+            renderer.xr.getSession().addEventListener('end', () => {
+                // Reset game when AR session ends
+                resetGame();
+            });
+            
+            // Begin XR session and start the game
+            navigator.xr.requestSession('immersive-ar', {
+                optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking', 'hit-test']
+            }).then(onSessionStarted);
+        }
+        
+        function onSessionStarted(session) {
+            renderer.xr.setSession(session);
+            document.getElementById('startARButton').style.display = 'none';
+            
+            // Reset game state
+            resetGame();
+            gameActive = true;
+        }
+        
+        function resetGame() {
+            // Reset game elements
+            if (bricks.length > 0) {
+                for (const brick of bricks) {
+                    gameBoard.remove(brick);
+                }
+                bricks = [];
+            }
+            
+            // Recreate game elements
+            createBricks();
+            
+            // Reset ball
+            ball.position.copy(paddle.position);
+            ball.position.y += PADDLE_HEIGHT + BALL_RADIUS;
+            ballDirection.set(Math.random() * 0.04 - 0.02, 0.04, 0);
+            
+            // Reset score and lives
+            score = 0;
+            lives = 3;
+            updateScoreDisplay();
+            
+            // Hide game over screen
+            document.getElementById('gameOverScreen').style.display = 'none';
+        }
+        
+        function restartGame() {
+            document.getElementById('gameOverScreen').style.display = 'none';
+            resetGame();
+            gameActive = true;
+        }
+        
+        function onSelectStart(event) {
+            gameActive = true;
+        }
+        
+        function onSelectEnd(event) {
+            // Handle button release
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        function updateScoreDisplay() {
+            document.getElementById('scoreDisplay').textContent = `Score: ${score} | Lives: ${lives}`;
+        }
+        
+        function handleGameOver() {
+            gameActive = false;
+            document.getElementById('finalScore').textContent = `Your score: ${score}`;
+            document.getElementById('gameOverScreen').style.display = 'block';
+        }
+        
+        function updatePaddle() {
+            // Move paddle based on controller position
+            if (controller1.userData.isSelecting || controller2.userData.isSelecting) {
+                const controller = controller1.userData.isSelecting ? controller1 : controller2;
+                
+                // Get controller position relative to game board
+                tempMatrix.identity().extractRotation(controller.matrixWorld);
+                raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+                raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+                
+                // Calculate intersection with game board plane
+                const gameBoardPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), GAME_DEPTH/2);
+                const intersectionPoint = new THREE.Vector3();
+                raycaster.ray.intersectPlane(gameBoardPlane, intersectionPoint);
+                
+                // Convert world position to local position in game board
+                gameBoard.worldToLocal(intersectionPoint);
+                
+                // Update paddle x position, keeping it within bounds
+                paddle.position.x = THREE.MathUtils.clamp(
+                    intersectionPoint.x,
+                    -GAME_WIDTH/2 + PADDLE_WIDTH/2,
+                    GAME_WIDTH/2 - PADDLE_WIDTH/2
+                );
+            }
+        }
+        
+        function updateBall() {
+            if (!gameActive) return;
+            
+            // Move the ball
+            ball.position.x += ballDirection.x;
+            ball.position.y += ballDirection.y;
+            
+            // Check wall collisions
+            if (ball.position.x + BALL_RADIUS > GAME_WIDTH/2 || 
+                ball.position.x - BALL_RADIUS < -GAME_WIDTH/2) {
+                ballDirection.x = -ballDirection.x;
+            }
+            
+            if (ball.position.y + BALL_RADIUS > GAME_HEIGHT/2) {
+                ballDirection.y = -ballDirection.y;
+            }
+            
+            // Check for paddle collision
+            if (ball.position.y - BALL_RADIUS < paddle.position.y + PADDLE_HEIGHT/2 && 
+                ball.position.y > paddle.position.y &&
+                ball.position.x > paddle.position.x - PADDLE_WIDTH/2 &&
+                ball.position.x < paddle.position.x + PADDLE_WIDTH/2) {
+                
+                // Calculate rebound angle based on where the ball hit the paddle
+                const hitPoint = (ball.position.x - paddle.position.x) / (PADDLE_WIDTH/2);
+                ballDirection.x = hitPoint * 0.05;
+                ballDirection.y = Math.abs(ballDirection.y);
+            }
+            
+            // Check for ball falling out
+            if (ball.position.y - BALL_RADIUS < -GAME_HEIGHT/2) {
+                lives--;
+                updateScoreDisplay();
+                
+                if (lives <= 0) {
+                    handleGameOver();
+                } else {
+                    // Reset ball
+                    ball.position.copy(paddle.position);
+                    ball.position.y += PADDLE_HEIGHT + BALL_RADIUS;
+                    ballDirection.set(Math.random() * 0.04 - 0.02, 0.04, 0);
+                    gameActive = false; // Wait for button press to continue
+                }
+            }
+            
+            // Check brick collisions
+            for (let i = bricks.length - 1; i >= 0; i--) {
+                const brick = bricks[i];
+                
+                if (ball.position.x + BALL_RADIUS > brick.position.x - BRICK_WIDTH/2 &&
+                    ball.position.x - BALL_RADIUS < brick.position.x + BRICK_WIDTH/2 &&
+                    ball.position.y + BALL_RADIUS > brick.position.y - BRICK_HEIGHT/2 &&
+                    ball.position.y - BALL_RADIUS < brick.position.y + BRICK_HEIGHT/2) {
+                    
+                    // Determine collision side and bounce
+                    const dx = ball.position.x - brick.position.x;
+                    const dy = ball.position.y - brick.position.y;
+                    
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        // Left/right collision
+                        ballDirection.x = -ballDirection.x;
+                    } else {
+                        // Top/bottom collision
+                        ballDirection.y = -ballDirection.y;
+                    }
+                    
+                    // Remove the brick
+                    gameBoard.remove(brick);
+                    bricks.splice(i, 1);
+                    
+                    // Update score
+                    score += 10;
+                    updateScoreDisplay();
+                    
+                    // Check if all bricks are cleared
+                    if (bricks.length === 0) {
+                        // Victory!
+                        score += lives * 50; // Bonus for remaining lives
+                        updateScoreDisplay();
+                        handleGameOver();
+                    }
+                    
+                    // Only handle one brick collision per frame
+                    break;
+                }
+            }
+        }
+        
+        function animate() {
+            // Controller update
+            if (controller1) {
+                controller1.userData.isSelecting = controller1.userData.selectPressed;
+            }
+            if (controller2) {
+                controller2.userData.isSelecting = controller2.userData.selectPressed;
+            }
+            
+            // Update game elements
+            updatePaddle();
+            updateBall();
+            
+            // Render the scene
+            renderer.render(scene, camera);
+        }
+        
+        // Event listeners for XR controllers
+        function onSelectStart(event) {
+            const controller = event.target;
+            controller.userData.selectPressed = true;
+            gameActive = true;
+        }
+        
+        function onSelectEnd(event) {
+            const controller = event.target;
+            controller.userData.selectPressed = false;
+        }
+        
+        // Initialize the application
+        init();
+    </script>
+</body>
+</html>
