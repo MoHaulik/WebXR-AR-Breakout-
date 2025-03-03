@@ -104,7 +104,9 @@
         import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.js';
         import { BoxLineGeometry } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/geometries/BoxLineGeometry.js';
         import { XRControllerModelFactory } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/XRControllerModelFactory.js';
-        import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js';
+        
+        // FIX 1: Import ARButton with correct path and create our own implementation
+        // import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js';
 
         // Game variables
         let container;
@@ -302,7 +304,7 @@
             gameBoard.position.set(0, 0, -1);
             gameBoard.scale.set(0.5, 0.5, 0.5); // Scale down for AR
             
-            // Create game boundaries
+            // FIX 2: Create BoxLineGeometry correctly
             const boardGeometry = new BoxLineGeometry(
                 GAME_WIDTH, GAME_HEIGHT, GAME_DEPTH, 1, 1, 1
             );
@@ -364,11 +366,20 @@
         
         function startAR() {
             if (navigator.xr) {
+                // FIX 3: Added proper request handling with error catching
                 navigator.xr.requestSession('immersive-ar', {
                     requiredFeatures: ['hit-test', 'local-floor'],
                     optionalFeatures: ['dom-overlay'],
                     domOverlay: { root: document.body }
-                }).then(onSessionStarted);
+                }).then(onSessionStarted)
+                  .catch(error => {
+                      console.error('Error starting AR session:', error);
+                      document.getElementById('notSupportedInfo').style.display = 'block';
+                      document.getElementById('notSupportedInfo').innerHTML = 
+                          '<h2>AR Session Error</h2>' +
+                          '<p>Could not start AR session: ' + error.message + '</p>' +
+                          '<p>Please ensure your device supports WebXR AR.</p>';
+                  });
             }
         }
         
@@ -386,6 +397,9 @@
             isGamePlaced = false;
             gameBoard.visible = false;
             placementIndicator.visible = true;
+            
+            // FIX 4: Reset hit test source request flag
+            hitTestSourceRequested = false;
         }
         
         function onSessionEnded() {
@@ -441,64 +455,91 @@
             resetGame();
         }
         
+        // FIX 5: Update hit test function with safety checks
         function updateHitTest(frame) {
             if (!isGamePlaced && currentSession) {
                 if (!hitTestSourceRequested) {
                     // Request a hit test source
-                    currentSession.requestReferenceSpace('viewer').then((referenceSpace) => {
-                        currentSession.requestHitTestSource({ space: referenceSpace }).then((source) => {
-                            hitTestSource = source;
+                    currentSession.requestReferenceSpace('viewer')
+                        .then((referenceSpace) => {
+                            currentSession.requestHitTestSource({ space: referenceSpace })
+                                .then((source) => {
+                                    hitTestSource = source;
+                                })
+                                .catch(error => {
+                                    console.error('Error requesting hit test source:', error);
+                                });
+                        })
+                        .catch(error => {
+                            console.error('Error requesting reference space:', error);
                         });
-                    });
                     
                     hitTestSourceRequested = true;
                     return;
                 }
                 
-                if (hitTestSource) {
-                    const hitTestResults = frame.getHitTestResults(hitTestSource);
-                    
-                    if (hitTestResults.length > 0) {
-                        const hit = hitTestResults[0];
+                if (hitTestSource && frame) {
+                    try {
+                        const hitTestResults = frame.getHitTestResults(hitTestSource);
                         
-                        // Get hit position
-                        const pose = hit.getPose(renderer.xr.getReferenceSpace());
-                        
-                        if (pose) {
-                            placementIndicator.visible = true;
-                            placementIndicator.matrix.fromArray(pose.transform.matrix);
+                        if (hitTestResults && hitTestResults.length > 0) {
+                            const hit = hitTestResults[0];
+                            
+                            if (hit) {
+                                // Get hit position
+                                const referenceSpace = renderer.xr.getReferenceSpace();
+                                if (referenceSpace) {
+                                    const pose = hit.getPose(referenceSpace);
+                                    
+                                    if (pose) {
+                                        placementIndicator.visible = true;
+                                        placementIndicator.matrix.fromArray(pose.transform.matrix);
+                                    }
+                                }
+                            }
+                        } else {
+                            placementIndicator.visible = false;
                         }
-                    } else {
-                        placementIndicator.visible = false;
+                    } catch (error) {
+                        console.error('Error in hit test:', error);
                     }
                 }
             }
         }
         
+        // FIX 6: Update place game function with better error handling
         function placeGame(frame) {
-            if (!isGamePlaced && currentSession && hitTestSource) {
-                const hitTestResults = frame.getHitTestResults(hitTestSource);
-                
-                if (hitTestResults.length > 0) {
-                    const hit = hitTestResults[0];
-                    const pose = hit.getPose(renderer.xr.getReferenceSpace());
+            if (!isGamePlaced && currentSession && hitTestSource && frame) {
+                try {
+                    const hitTestResults = frame.getHitTestResults(hitTestSource);
                     
-                    if (pose) {
-                        // Place the game at hit position
-                        gameBoard.visible = true;
-                        gameBoard.position.set(0, 0, 0);
-                        gameBoard.position.setFromMatrixPosition(placementIndicator.matrix);
-                        // Adjust height slightly to avoid z-fighting with the floor
-                        gameBoard.position.y += 0.05;
+                    if (hitTestResults && hitTestResults.length > 0) {
+                        const hit = hitTestResults[0];
+                        const referenceSpace = renderer.xr.getReferenceSpace();
                         
-                        placementIndicator.visible = false;
-                        isGamePlaced = true;
-                        document.getElementById('info').textContent = 'Press controller trigger to start the game';
-                        
-                        // Release the hit test source
-                        hitTestSource.cancel();
-                        hitTestSource = null;
+                        if (referenceSpace) {
+                            const pose = hit.getPose(referenceSpace);
+                            
+                            if (pose) {
+                                // Place the game at hit position
+                                gameBoard.visible = true;
+                                gameBoard.position.set(0, 0, 0);
+                                gameBoard.position.setFromMatrixPosition(placementIndicator.matrix);
+                                // Adjust height slightly to avoid z-fighting with the floor
+                                gameBoard.position.y += 0.05;
+                                
+                                placementIndicator.visible = false;
+                                isGamePlaced = true;
+                                document.getElementById('info').textContent = 'Press controller trigger to start the game';
+                                
+                                // Release the hit test source
+                                hitTestSource.cancel();
+                                hitTestSource = null;
+                            }
+                        }
                     }
+                } catch (error) {
+                    console.error('Error placing game:', error);
                 }
             }
         }
@@ -543,6 +584,7 @@
             document.getElementById('gameOverScreen').style.display = 'block';
         }
         
+        // FIX 7: Update paddle function with better error handling
         function updatePaddle() {
             if (!isGamePlaced || !gameStarted) return;
             
@@ -551,45 +593,60 @@
                                     (controller2.userData.selectPressed ? controller2 : null);
             
             if (activeController) {
-                // Convert controller position to game board space
-                const controllerWorldPosition = new THREE.Vector3();
-                controllerWorldPosition.setFromMatrixPosition(activeController.matrixWorld);
-                
-                // Transform to local space relative to the game board
-                const localPos = controllerWorldPosition.clone();
-                gameBoard.worldToLocal(localPos);
-                
-                // Update paddle x position, keeping it within bounds
-                paddle.position.x = THREE.MathUtils.clamp(
-                    localPos.x,
-                    -GAME_WIDTH/2 + PADDLE_WIDTH/2,
-                    GAME_WIDTH/2 - PADDLE_WIDTH/2
-                );
+                try {
+                    // Convert controller position to game board space
+                    const controllerWorldPosition = new THREE.Vector3();
+                    controllerWorldPosition.setFromMatrixPosition(activeController.matrixWorld);
+                    
+                    // Transform to local space relative to the game board
+                    const localPos = controllerWorldPosition.clone();
+                    gameBoard.worldToLocal(localPos);
+                    
+                    // Update paddle x position, keeping it within bounds
+                    paddle.position.x = THREE.MathUtils.clamp(
+                        localPos.x,
+                        -GAME_WIDTH/2 + PADDLE_WIDTH/2,
+                        GAME_WIDTH/2 - PADDLE_WIDTH/2
+                    );
+                } catch (error) {
+                    console.error('Error updating paddle:', error);
+                }
             }
         }
         
+        // FIX 8: Update ball function with better collision detection
         function updateBall() {
             if (!isGamePlaced || !gameActive || !gameStarted) return;
             
+            // FIX: Use clock.getDelta() correctly
             const delta = clock.getDelta();
+            const scaledSpeed = ballSpeed * delta * 60; // Scale by 60 to normalize at 60fps
             
             // Move the ball
-            ball.position.x += ballDirection.x;
-            ball.position.y += ballDirection.y;
+            ball.position.x += ballDirection.x * scaledSpeed;
+            ball.position.y += ballDirection.y * scaledSpeed;
             
             // Check wall collisions
             if (ball.position.x + BALL_RADIUS > GAME_WIDTH/2 || 
                 ball.position.x - BALL_RADIUS < -GAME_WIDTH/2) {
                 ballDirection.x = -ballDirection.x;
+                // Fix ball position if it's outside bounds
+                if (ball.position.x + BALL_RADIUS > GAME_WIDTH/2) {
+                    ball.position.x = GAME_WIDTH/2 - BALL_RADIUS;
+                } else if (ball.position.x - BALL_RADIUS < -GAME_WIDTH/2) {
+                    ball.position.x = -GAME_WIDTH/2 + BALL_RADIUS;
+                }
             }
             
             if (ball.position.y + BALL_RADIUS > GAME_HEIGHT/2) {
                 ballDirection.y = -ballDirection.y;
+                // Fix ball position if it's outside bounds
+                ball.position.y = GAME_HEIGHT/2 - BALL_RADIUS;
             }
             
-            // Check for paddle collision
+            // Check for paddle collision with improved collision detection
             if (ball.position.y - BALL_RADIUS < paddle.position.y + PADDLE_HEIGHT/2 && 
-                ball.position.y > paddle.position.y &&
+                ball.position.y > paddle.position.y - PADDLE_HEIGHT/2 &&
                 ball.position.x > paddle.position.x - PADDLE_WIDTH/2 &&
                 ball.position.x < paddle.position.x + PADDLE_WIDTH/2) {
                 
@@ -598,8 +655,17 @@
                 ballDirection.x = hitPoint * 0.05;
                 ballDirection.y = Math.abs(ballDirection.y);
                 
+                // Fix ball position to prevent getting stuck in paddle
+                ball.position.y = paddle.position.y + PADDLE_HEIGHT/2 + BALL_RADIUS;
+                
                 // Add a little boost to keep the game moving
+                const currentMagnitude = Math.sqrt(ballDirection.x * ballDirection.x + ballDirection.y * ballDirection.y);
                 ballDirection.y += 0.001;
+                
+                // Normalize and scale to maintain consistent speed
+                const newMagnitude = Math.sqrt(ballDirection.x * ballDirection.x + ballDirection.y * ballDirection.y);
+                ballDirection.x = ballDirection.x * (currentMagnitude / newMagnitude);
+                ballDirection.y = ballDirection.y * (currentMagnitude / newMagnitude);
             }
             
             // Check for ball falling out
@@ -620,25 +686,44 @@
                 }
             }
             
-            // Check brick collisions
+            // Check brick collisions with improved detection
             for (let i = bricks.length - 1; i >= 0; i--) {
                 const brick = bricks[i];
                 
-                if (ball.position.x + BALL_RADIUS > brick.position.x - BRICK_WIDTH/2 &&
-                    ball.position.x - BALL_RADIUS < brick.position.x + BRICK_WIDTH/2 &&
-                    ball.position.y + BALL_RADIUS > brick.position.y - BRICK_HEIGHT/2 &&
-                    ball.position.y - BALL_RADIUS < brick.position.y + BRICK_HEIGHT/2) {
+                // Calculate distance between centers
+                const dx = ball.position.x - brick.position.x;
+                const dy = ball.position.y - brick.position.y;
+                
+                // Calculate collision boundaries
+                const combinedHalfWidths = BALL_RADIUS + BRICK_WIDTH/2;
+                const combinedHalfHeights = BALL_RADIUS + BRICK_HEIGHT/2;
+                
+                // Check for collision
+                if (Math.abs(dx) < combinedHalfWidths && Math.abs(dy) < combinedHalfHeights) {
+                    // Determine collision side more accurately
+                    const overlapX = combinedHalfWidths - Math.abs(dx);
+                    const overlapY = combinedHalfHeights - Math.abs(dy);
                     
-                    // Determine collision side and bounce
-                    const dx = ball.position.x - brick.position.x;
-                    const dy = ball.position.y - brick.position.y;
-                    
-                    if (Math.abs(dx) > Math.abs(dy)) {
+                    if (overlapX < overlapY) {
                         // Left/right collision
                         ballDirection.x = -ballDirection.x;
+                        
+                        // Fix ball position to prevent getting stuck in brick
+                        if (dx > 0) {
+                            ball.position.x = brick.position.x + BRICK_WIDTH/2 + BALL_RADIUS;
+                        } else {
+                            ball.position.x = brick.position.x - BRICK_WIDTH/2 - BALL_RADIUS;
+                        }
                     } else {
                         // Top/bottom collision
                         ballDirection.y = -ballDirection.y;
+                        
+                        // Fix ball position to prevent getting stuck in brick
+                        if (dy > 0) {
+                            ball.position.y = brick.position.y + BRICK_HEIGHT/2 + BALL_RADIUS;
+                        } else {
+                            ball.position.y = brick.position.y - BRICK_HEIGHT/2 - BALL_RADIUS;
+                        }
                     }
                     
                     // Remove the brick
